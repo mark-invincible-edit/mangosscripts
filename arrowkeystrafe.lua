@@ -1,5 +1,6 @@
 -- ArrowKeyStrafe (LocalScript)
 -- Left/Right arrow keys strafe the character (like A and D) instead of rotating the camera.
+-- Right Ctrl also makes the character jump (same as Space).
 -- Self-contained: no extra objects needed, works wherever a LocalScript can run
 -- (StarterPlayerScripts, StarterCharacterScripts, StarterGui, StarterPack, etc.).
 
@@ -80,6 +81,15 @@ end
 RunService:BindToRenderStep(STEP_NAME, Enum.RenderPriority.Input.Value + 1, function()
 	if UserInputService:GetFocusedTextBox() then
 		return
+	end
+
+	-- Right Ctrl = jump (hold to keep jumping, just like holding Space)
+	if UserInputService:IsKeyDown(Enum.KeyCode.RightControl) then
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if humanoid and humanoid.Health > 0 then
+			humanoid.Jump = true
+		end
 	end
 
 	local strafe = 0

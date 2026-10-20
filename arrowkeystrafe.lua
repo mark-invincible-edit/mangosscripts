@@ -84,7 +84,7 @@ RunService:BindToRenderStep(STEP_NAME, Enum.RenderPriority.Input.Value + 1, func
 	end
 
 	-- Right Ctrl = jump (hold to keep jumping, just like holding Space)
-	if UserInputService:IsKeyDown(Enum.KeyCode.End) then
+	if UserInputService:IsKeyDown(Enum.KeyCode.RightControl) then
 		local character = player.Character
 		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 		if humanoid and humanoid.Health > 0 then

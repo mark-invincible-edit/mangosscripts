@@ -2,6 +2,7 @@
 	fly/to - fly at a player, route around stuff, adjustable speed, own gui.
 	paste into any LocalScript. needs nothing else in the place.
 	rshift = hide/show the gui
+	keeps flying while you're dead (ragdoll corpse gets dragged), resumes on respawn
 ]]
 
 local Players = game:GetService("Players")
@@ -20,20 +21,27 @@ end
 
 ---------------------------------------------------------------- settings
 local SPEED_MIN, SPEED_MAX, SPEED_STEP, SPEED_START = 10, 250, 5, 70
-local ARRIVE_DIST = 6 -- hover this close to the target
+local ARRIVE_DIST = 2 -- hover this close to the target
 local BODY_RADIUS = 2 -- how fat we pretend to be when checking for walls
 local HOVER_HEIGHT = 3.5 -- height above the navmesh floor while following a path
 local STEER_LOOK = 18 -- how far ahead the fallback steering looks
 local WIN_W = 330
 
----------------------------------------------------------------- palette (one accent, no gradients)
-local INK = Color3.fromRGB(19, 18, 17)
-local INK2 = Color3.fromRGB(32, 31, 28)
-local PIT = Color3.fromRGB(13, 12, 11)
-local BONE = Color3.fromRGB(233, 226, 211)
-local DIM = Color3.fromRGB(125, 119, 108)
-local HOT = Color3.fromRGB(255, 91, 31)
-local DIM_HEX = "rgb(125,119,108)"
+---------------------------------------------------------------- palette: two colours, everything else is a mix of them
+local BASE = Color3.fromRGB(15, 21, 18) -- deep green-black
+local ACCENT = Color3.fromRGB(190, 242, 100) -- lime
+local SURFACE = BASE:Lerp(ACCENT, 0.07)
+local RAISED = BASE:Lerp(ACCENT, 0.14)
+local LINE = BASE:Lerp(ACCENT, 0.24)
+local MUTED = BASE:Lerp(ACCENT, 0.5)
+local TEXT = ACCENT:Lerp(Color3.new(1, 1, 1), 0.8)
+local SHADOW = ACCENT:Lerp(BASE, 0.6)
+local ENGAGED = BASE:Lerp(ACCENT, 0.22)
+
+local function rgbStr(c)
+	return string.format("rgb(%d,%d,%d)", math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5))
+end
+local MUTED_HEX = rgbStr(MUTED)
 local MONO = Enum.Font.RobotoMono
 
 local FAST = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
@@ -63,7 +71,7 @@ local function text(parent, props)
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
 		Font = MONO,
-		TextColor3 = BONE,
+		TextColor3 = TEXT,
 		TextSize = 13,
 		TextXAlignment = Enum.TextXAlignment.Left,
 	}
@@ -72,6 +80,11 @@ local function text(parent, props)
 	end
 	return new("TextLabel", p, parent)
 end
+
+local function round(parent, radius)
+	return new("UICorner", { CornerRadius = radius }, parent)
+end
+local FULL = UDim.new(1, 0)
 
 -- one live tween per property so spamming never fights itself
 local live = setmetatable({}, { __mode = "k" })
@@ -102,7 +115,7 @@ end
 
 ---------------------------------------------------------------- state
 local target = nil
-local flying = false
+local flying = false -- "engaged": stays true through death/respawn until you abort
 local speed = SPEED_START
 local mode = "IDLE"
 local vel = Vector3.zero
@@ -351,11 +364,8 @@ local function stopFly()
 	arrived = false
 end
 
-local function startFly()
-	local char, hum, root = myParts()
-	if not (char and hum and root) or hum.Health <= 0 then
-		return false
-	end
+-- builds the mover on whatever body exists right now (called on engage AND after every respawn)
+local function attachMover(hum, root)
 	for _, n in { "FlyToMover", "FlyToAlign", "FlyToAttach" } do
 		local old = root:FindFirstChild(n)
 		if old then
@@ -379,10 +389,20 @@ local function startFly()
 		MaxTorque = 1e8,
 		Responsiveness = 40,
 		CFrame = root.CFrame,
+		Enabled = hum.Health > 0, -- dead = ragdoll, let it flop while we drag it
 	}, root)
 	hum.PlatformStand = true
 	vel = root.AssemblyLinearVelocity
+	sampleAt, samplePos, stuck = 0, root.Position, 0
 	resetNav()
+end
+
+local function startFly()
+	local _, hum, root = myParts()
+	if hum and root then
+		attachMover(hum, root)
+	end
+	-- if there's no body at all right now it still engages and kicks in on respawn
 	flying = true
 	mode = "IDLE"
 	return true
@@ -403,7 +423,7 @@ local holder = new("Frame", {
 	Name = "Holder",
 	BackgroundTransparency = 1,
 	Size = UDim2.fromOffset(0, 0),
-	Position = UDim2.fromScale(0.02, 0.2),
+	Position = UDim2.fromScale(0.02, 0.07),
 }, gui)
 local root = new("Frame", {
 	Name = "Root",
@@ -414,20 +434,23 @@ local uiScale = new("UIScale", { Scale = 0.02 }, root)
 
 local shadow = new("Frame", {
 	Name = "Shadow",
-	BackgroundColor3 = HOT,
+	BackgroundColor3 = SHADOW,
 	BorderSizePixel = 0,
 	ZIndex = 1,
 	Size = UDim2.fromOffset(WIN_W, 100),
 }, root)
+round(shadow, UDim.new(0, 18))
+
 local window = new("Frame", {
 	Name = "Window",
-	BackgroundColor3 = INK,
+	BackgroundColor3 = BASE,
 	BorderSizePixel = 0,
 	ZIndex = 2,
 	Size = UDim2.fromOffset(WIN_W, 0),
 	AutomaticSize = Enum.AutomaticSize.Y,
 }, root)
-new("UIStroke", { Color = BONE, Thickness = 2, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, window)
+round(window, UDim.new(0, 18))
+new("UIStroke", { Color = LINE, Thickness = 1.5, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, window)
 new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, window)
 
 local function syncShadow()
@@ -442,46 +465,46 @@ uiScale:GetPropertyChangedSignal("Scale"):Connect(syncShadow)
 local header = new("Frame", {
 	Name = "Header",
 	LayoutOrder = 1,
-	Size = UDim2.new(1, 0, 0, 34),
-	BackgroundColor3 = BONE,
-	BorderSizePixel = 0,
+	Size = UDim2.new(1, 0, 0, 40),
+	BackgroundTransparency = 1,
 }, window)
 local pulse = new("Frame", {
 	Size = UDim2.fromOffset(10, 10),
-	Position = UDim2.new(0, 12, 0.5, -5),
-	BackgroundColor3 = INK,
+	Position = UDim2.new(0, 16, 0.5, -5),
+	BackgroundColor3 = MUTED,
 	BorderSizePixel = 0,
 }, header)
+round(pulse, FULL)
 text(header, {
 	Text = "FLY/TO",
-	TextColor3 = INK,
-	TextSize = 16,
-	Position = UDim2.new(0, 32, 0, 0),
-	Size = UDim2.new(1, -100, 1, 0),
+	TextSize = 15,
+	Position = UDim2.new(0, 34, 0, 0),
+	Size = UDim2.new(1, -110, 1, 0),
 })
 
 local function headerButton(label, xOff)
 	local b = new("TextButton", {
 		Text = label,
 		Font = MONO,
-		TextSize = 18,
-		TextColor3 = INK,
-		BackgroundColor3 = BONE,
+		TextSize = 14,
+		TextColor3 = TEXT,
+		BackgroundColor3 = RAISED,
 		BorderSizePixel = 0,
 		AutoButtonColor = false,
-		Size = UDim2.new(0, 34, 1, 0),
-		Position = UDim2.new(1, xOff, 0, 0),
+		Size = UDim2.fromOffset(24, 24),
+		Position = UDim2.new(1, xOff, 0.5, -12),
 	}, header)
+	round(b, FULL)
 	b.MouseEnter:Connect(function()
-		tween(b, FAST, { BackgroundColor3 = INK, TextColor3 = BONE })
+		tween(b, FAST, { BackgroundColor3 = ACCENT, TextColor3 = BASE })
 	end)
 	b.MouseLeave:Connect(function()
-		tween(b, FAST, { BackgroundColor3 = BONE, TextColor3 = INK })
+		tween(b, FAST, { BackgroundColor3 = RAISED, TextColor3 = TEXT })
 	end)
 	return b
 end
 local collapseBtn = headerButton("-", -68)
-local closeBtn = headerButton("x", -34)
+local closeBtn = headerButton("x", -38)
 
 -- body
 local body = new("Frame", {
@@ -492,56 +515,59 @@ local body = new("Frame", {
 	BackgroundTransparency = 1,
 	ClipsDescendants = true,
 }, window)
-new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, body)
-
-local function sep(order)
-	return new("Frame", {
-		LayoutOrder = order,
-		Size = UDim2.new(1, 0, 0, 1),
-		BackgroundColor3 = Color3.fromRGB(58, 55, 50),
-		BorderSizePixel = 0,
-	}, body)
-end
+new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 10) }, body)
+new("UIPadding", {
+	PaddingLeft = UDim.new(0, 14),
+	PaddingRight = UDim.new(0, 14),
+	PaddingBottom = UDim.new(0, 14),
+}, body)
 
 -- 1. target label
-local labelRow = new("Frame", { LayoutOrder = 1, Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1 }, body)
+local labelRow = new("Frame", { LayoutOrder = 1, Size = UDim2.new(1, 0, 0, 14), BackgroundTransparency = 1 }, body)
 text(labelRow, {
 	Text = "TARGET",
-	TextColor3 = DIM,
+	TextColor3 = MUTED,
 	TextSize = 11,
-	Position = UDim2.new(0, 12, 0, 0),
-	Size = UDim2.new(0.5, -12, 1, 0),
+	Size = UDim2.new(0.5, 0, 1, 0),
 })
 text(labelRow, {
 	Text = "STUDS",
-	TextColor3 = DIM,
+	TextColor3 = MUTED,
 	TextSize = 11,
 	TextXAlignment = Enum.TextXAlignment.Right,
 	Position = UDim2.new(0.5, 0, 0, 0),
-	Size = UDim2.new(0.5, -12, 1, 0),
+	Size = UDim2.new(0.5, 0, 1, 0),
 })
 
 -- 2. player list
 local listWrap = new("Frame", {
 	LayoutOrder = 2,
-	Size = UDim2.new(1, 0, 0, 132),
-	BackgroundColor3 = PIT,
+	Size = UDim2.new(1, 0, 0, 128),
+	BackgroundColor3 = SURFACE,
 	BorderSizePixel = 0,
 }, body)
+round(listWrap, UDim.new(0, 12))
+new("UIStroke", { Color = LINE, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, listWrap)
 local list = new("ScrollingFrame", {
 	Size = UDim2.fromScale(1, 1),
 	BackgroundTransparency = 1,
 	BorderSizePixel = 0,
 	ScrollBarThickness = 3,
-	ScrollBarImageColor3 = HOT,
+	ScrollBarImageColor3 = ACCENT,
 	CanvasSize = UDim2.new(),
 	AutomaticCanvasSize = Enum.AutomaticSize.Y,
 	ScrollingDirection = Enum.ScrollingDirection.Y,
 }, listWrap)
-new("UIListLayout", { SortOrder = Enum.SortOrder.Name }, list)
+new("UIListLayout", { SortOrder = Enum.SortOrder.Name, Padding = UDim.new(0, 2) }, list)
+new("UIPadding", {
+	PaddingTop = UDim.new(0, 6),
+	PaddingBottom = UDim.new(0, 6),
+	PaddingLeft = UDim.new(0, 6),
+	PaddingRight = UDim.new(0, 8),
+}, list)
 local empty = text(listWrap, {
 	Text = "nobody else here...",
-	TextColor3 = DIM,
+	TextColor3 = MUTED,
 	TextXAlignment = Enum.TextXAlignment.Center,
 	Size = UDim2.fromScale(1, 1),
 	ZIndex = 2,
@@ -554,9 +580,9 @@ local function paintRow(plr, on)
 	if not r then
 		return
 	end
-	tween(r.bar, MED, { Size = UDim2.new(0, on and 5 or 0, 1, 0) })
-	tween(r.name, FAST, { TextColor3 = on and HOT or BONE })
-	tween(r.btn, FAST, { BackgroundTransparency = on and 0 or 1 })
+	tween(r.btn, FAST, { BackgroundColor3 = on and ACCENT or RAISED, BackgroundTransparency = on and 0 or 1 })
+	tween(r.name, FAST, { TextColor3 = on and BASE or TEXT })
+	tween(r.dist, FAST, { TextColor3 = on and BASE or MUTED })
 end
 
 local function addRow(plr)
@@ -567,34 +593,34 @@ local function addRow(plr)
 		Name = string.lower(plr.DisplayName) .. plr.UserId,
 		Text = "",
 		AutoButtonColor = false,
-		BackgroundColor3 = INK2,
+		BackgroundColor3 = RAISED,
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
-		Size = UDim2.new(1, 0, 0, 30),
+		Size = UDim2.new(1, 0, 0, 32),
 	}, list)
-	local bar = new("Frame", { Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = HOT, BorderSizePixel = 0 }, btn)
+	round(btn, UDim.new(0, 8))
 	local nameL = text(btn, {
 		Text = plr.DisplayName,
 		TextSize = 14,
 		TextTruncate = Enum.TextTruncate.AtEnd,
-		Position = UDim2.new(0, 14, 0, 0),
-		Size = UDim2.new(1, -80, 1, 0),
+		Position = UDim2.new(0, 12, 0, 0),
+		Size = UDim2.new(1, -76, 1, 0),
 		TextTransparency = 1,
 	})
 	local distL = text(btn, {
 		Text = "--",
-		TextColor3 = DIM,
+		TextColor3 = MUTED,
 		TextSize = 12,
 		TextXAlignment = Enum.TextXAlignment.Right,
 		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.new(1, -12, 0, 0),
+		Position = UDim2.new(1, -10, 0, 0),
 		Size = UDim2.new(0, 56, 1, 0),
 	})
-	rows[plr] = { btn = btn, bar = bar, name = nameL, dist = distL }
+	rows[plr] = { btn = btn, name = nameL, dist = distL }
 	tween(nameL, MED, { TextTransparency = 0 })
 	btn.MouseEnter:Connect(function()
 		if target ~= plr then
-			tween(btn, FAST, { BackgroundTransparency = 0.5 })
+			tween(btn, FAST, { BackgroundColor3 = RAISED, BackgroundTransparency = 0 })
 		end
 	end)
 	btn.MouseLeave:Connect(function()
@@ -608,28 +634,26 @@ local function addRow(plr)
 	empty.Visible = false
 end
 
-sep(3)
-
--- 4. speed
-local speedBox = new("Frame", { LayoutOrder = 4, Size = UDim2.new(1, 0, 0, 78), BackgroundTransparency = 1 }, body)
+-- 3. speed
+local speedBox = new("Frame", { LayoutOrder = 3, Size = UDim2.new(1, 0, 0, 74), BackgroundTransparency = 1 }, body)
 text(speedBox, {
 	Text = "SPEED",
-	TextColor3 = DIM,
+	TextColor3 = MUTED,
 	TextSize = 11,
-	Position = UDim2.new(0, 12, 0, 10),
+	Position = UDim2.new(0, 0, 0, 10),
 	Size = UDim2.new(0, 80, 0, 14),
 })
 local function fmtSpeed(n)
-	return string.format('%03d<font size="11" color="%s"> st/s</font>', n, DIM_HEX)
+	return string.format('%03d<font size="11" color="%s"> st/s</font>', n, MUTED_HEX)
 end
 local readout = text(speedBox, {
 	RichText = true,
 	Text = fmtSpeed(SPEED_START),
 	TextSize = 24,
-	TextColor3 = HOT,
+	TextColor3 = ACCENT,
 	TextXAlignment = Enum.TextXAlignment.Right,
 	AnchorPoint = Vector2.new(1, 0),
-	Position = UDim2.new(1, -12, 0, 4),
+	Position = UDim2.new(1, 0, 0, 4),
 	Size = UDim2.new(0, 160, 0, 28),
 })
 
@@ -638,57 +662,58 @@ local function stepButton(label, pos)
 		Text = label,
 		Font = MONO,
 		TextSize = 16,
-		TextColor3 = BONE,
-		BackgroundColor3 = INK2,
+		TextColor3 = TEXT,
+		BackgroundColor3 = RAISED,
 		BorderSizePixel = 0,
 		AutoButtonColor = false,
-		Size = UDim2.fromOffset(26, 26),
+		Size = UDim2.fromOffset(28, 28),
 		Position = pos,
 	}, speedBox)
-	local stroke = new("UIStroke", { Color = DIM, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, b)
+	round(b, FULL)
 	b.MouseEnter:Connect(function()
-		tween(stroke, FAST, { Color = BONE })
-	end)
-	b.MouseLeave:Connect(function()
-		tween(stroke, FAST, { Color = DIM })
+		tween(b, FAST, { BackgroundColor3 = LINE })
 	end)
 	b.MouseButton1Down:Connect(function()
-		tween(b, FAST, { BackgroundColor3 = HOT, TextColor3 = INK })
+		tween(b, FAST, { BackgroundColor3 = ACCENT, TextColor3 = BASE })
 	end)
 	local function up()
-		tween(b, FAST, { BackgroundColor3 = INK2, TextColor3 = BONE })
+		tween(b, FAST, { BackgroundColor3 = RAISED, TextColor3 = TEXT })
 	end
 	b.MouseButton1Up:Connect(up)
 	b.MouseLeave:Connect(up)
 	return b
 end
-local minus = stepButton("-", UDim2.new(0, 12, 0, 40))
-local plus = stepButton("+", UDim2.new(1, -38, 0, 40))
+local minus = stepButton("-", UDim2.new(0, 0, 0, 40))
+local plus = stepButton("+", UDim2.new(1, -28, 0, 40))
 
-local track = new("Frame", {
-	Position = UDim2.new(0, 46, 0, 40),
-	Size = UDim2.new(1, -92, 0, 26),
-	BackgroundColor3 = PIT,
-	BorderSizePixel = 0,
+-- hit area is taller than the track so it's easy to grab on a phone
+local hit = new("Frame", {
+	Position = UDim2.new(0, 40, 0, 40),
+	Size = UDim2.new(1, -80, 0, 28),
+	BackgroundTransparency = 1,
 }, speedBox)
-new("UIStroke", { Color = DIM, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, track)
-local fill = new("Frame", { BackgroundColor3 = HOT, BorderSizePixel = 0, Size = UDim2.fromScale(0, 1), ZIndex = 2 }, track)
-for i = 1, 19 do
-	new("Frame", {
-		BackgroundColor3 = PIT,
-		BorderSizePixel = 0,
-		Size = UDim2.new(0, 2, 1, 0),
-		Position = UDim2.new(i / 20, -1, 0, 0),
-		ZIndex = 3,
-	}, track)
-end
-local handle = new("Frame", {
-	BackgroundColor3 = BONE,
+local track = new("Frame", {
+	Position = UDim2.new(0, 0, 0.5, -5),
+	Size = UDim2.new(1, 0, 0, 10),
+	BackgroundColor3 = RAISED,
 	BorderSizePixel = 0,
-	AnchorPoint = Vector2.new(0.5, 0),
-	Size = UDim2.new(0, 6, 1, 12),
-	ZIndex = 4,
+}, hit)
+round(track, FULL)
+local fill = new("Frame", {
+	BackgroundColor3 = ACCENT,
+	BorderSizePixel = 0,
+	Size = UDim2.fromScale(0, 1),
 }, track)
+round(fill, FULL)
+local knob = new("Frame", {
+	BackgroundColor3 = ACCENT,
+	BorderSizePixel = 0,
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Size = UDim2.fromOffset(22, 22),
+	ZIndex = 3,
+}, track)
+round(knob, FULL)
+new("UIStroke", { Color = BASE, Thickness = 3, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, knob)
 
 local shown = new("NumberValue", { Value = SPEED_START }, gui)
 shown.Changed:Connect(function(v)
@@ -698,7 +723,7 @@ end)
 local function paintSlider()
 	local f = (speed - SPEED_MIN) / (SPEED_MAX - SPEED_MIN)
 	fill.Size = UDim2.fromScale(f, 1)
-	handle.Position = UDim2.new(f, 0, 0, -6)
+	knob.Position = UDim2.new(f, 0, 0.5, 0)
 end
 paintSlider()
 
@@ -728,64 +753,66 @@ end
 
 local sliding = false
 local function fromX(x)
-	local f = math.clamp((x - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
+	local f = math.clamp((x - hit.AbsolutePosition.X) / math.max(hit.AbsoluteSize.X, 1), 0, 1)
 	setSpeed(SPEED_MIN + f * (SPEED_MAX - SPEED_MIN))
 end
-track.InputBegan:Connect(function(input)
+hit.InputBegan:Connect(function(input)
 	if isPress(input) then
 		sliding = true
-		tween(handle, FAST, { Size = UDim2.new(0, 10, 1, 12) })
+		tween(knob, FAST, { Size = UDim2.fromOffset(28, 28) })
 		fromX(input.Position.X)
 	end
 end)
 
-sep(5)
-
--- 6. status strip
+-- 4. status pill
 local statusRow = new("Frame", {
-	LayoutOrder = 6,
-	Size = UDim2.new(1, 0, 0, 28),
-	BackgroundColor3 = PIT,
+	LayoutOrder = 4,
+	Size = UDim2.new(1, 0, 0, 30),
+	BackgroundColor3 = SURFACE,
 	BorderSizePixel = 0,
 }, body)
+round(statusRow, FULL)
+new("UIStroke", { Color = LINE, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, statusRow)
 local modeLabel = text(statusRow, {
 	RichText = true,
 	TextSize = 12,
-	Position = UDim2.new(0, 12, 0, 0),
-	Size = UDim2.new(0.55, -12, 1, 0),
+	Position = UDim2.new(0, 14, 0, 0),
+	Size = UDim2.new(0.55, -14, 1, 0),
 })
 local distLabel = text(statusRow, {
 	RichText = true,
 	TextSize = 12,
 	TextXAlignment = Enum.TextXAlignment.Right,
 	Position = UDim2.new(0.55, 0, 0, 0),
-	Size = UDim2.new(0.45, -12, 1, 0),
+	Size = UDim2.new(0.45, -14, 1, 0),
 })
 
--- 7. action button (sits on a hard shadow, sinks into it when pressed)
-local actionWrap = new("Frame", { LayoutOrder = 7, Size = UDim2.new(1, 0, 0, 62), BackgroundTransparency = 1 }, body)
-local ACT_POS = UDim2.new(0, 12, 0, 10)
-local ACT_PRESSED = UDim2.new(0, 16, 0, 14)
-local ACT_SIZE = UDim2.new(1, -29, 0, 40)
+-- 5. action button (sits on a hard shadow, sinks into it when pressed)
+local actionWrap = new("Frame", { LayoutOrder = 5, Size = UDim2.new(1, 0, 0, 50), BackgroundTransparency = 1 }, body)
+local ACT_POS = UDim2.new(0, 0, 0, 0)
+local ACT_PRESSED = UDim2.new(0, 4, 0, 4)
+local ACT_SIZE = UDim2.new(1, -4, 0, 44)
 local actionShadow = new("Frame", {
-	Position = UDim2.new(0, 17, 0, 15),
+	Position = UDim2.new(0, 4, 0, 4),
 	Size = ACT_SIZE,
-	BackgroundColor3 = HOT,
+	BackgroundColor3 = SHADOW,
 	BorderSizePixel = 0,
 	ZIndex = 1,
 }, actionWrap)
+round(actionShadow, UDim.new(0, 12))
 local action = new("TextButton", {
 	Position = ACT_POS,
 	Size = ACT_SIZE,
-	BackgroundColor3 = BONE,
+	BackgroundColor3 = SURFACE,
 	BorderSizePixel = 0,
 	AutoButtonColor = false,
 	Font = MONO,
 	TextSize = 16,
-	TextColor3 = INK,
+	TextColor3 = MUTED,
 	Text = "PICK A TARGET",
 	ZIndex = 2,
 }, actionWrap)
+round(action, UDim.new(0, 12))
 action.MouseButton1Down:Connect(function()
 	tween(action, FAST, { Position = ACT_PRESSED })
 end)
@@ -804,15 +831,14 @@ local function shake(obj, base)
 	end)
 end
 
--- 8. footer
-local footer = text(body, {
-	LayoutOrder = 8,
+-- 6. footer
+text(body, {
+	LayoutOrder = 6,
 	Text = "RSHIFT hides  /  drag the top bar",
-	TextColor3 = DIM,
+	TextColor3 = MUTED,
 	TextSize = 10,
-	Size = UDim2.new(1, 0, 0, 22),
+	Size = UDim2.new(1, 0, 0, 14),
 })
-new("UIPadding", { PaddingLeft = UDim.new(0, 12) }, footer)
 
 ---------------------------------------------------------------- gui behaviour
 local pulseTween = nil
@@ -823,23 +849,23 @@ local function setPulse(on)
 	end
 	pulse.BackgroundTransparency = 0
 	if on then
-		pulse.BackgroundColor3 = HOT
+		pulse.BackgroundColor3 = ACCENT
 		pulseTween = TweenService:Create(
 			pulse,
 			TweenInfo.new(0.45, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
-			{ BackgroundTransparency = 0.85 }
+			{ BackgroundTransparency = 0.8 }
 		)
 		pulseTween:Play()
 	else
-		pulse.BackgroundColor3 = INK
+		pulse.BackgroundColor3 = MUTED
 	end
 end
 
 local shownMode = ""
 local function paintMode()
 	shownMode = mode
-	modeLabel.Text = string.format('<font color="%s">MODE </font>%s', DIM_HEX, mode)
-	modeLabel.TextColor3 = (flying and mode ~= "ARRIVED") and HOT or BONE
+	modeLabel.Text = string.format('<font color="%s">MODE </font>%s', MUTED_HEX, mode)
+	modeLabel.TextColor3 = (flying and mode ~= "ARRIVED") and ACCENT or TEXT
 	modeLabel.TextTransparency = 0.85
 	tween(modeLabel, MED, { TextTransparency = 0 })
 end
@@ -847,16 +873,16 @@ end
 refreshUI = function()
 	if flying then
 		action.Text = "ABORT"
-		tween(action, MED, { BackgroundColor3 = HOT, TextColor3 = INK })
-		tween(actionShadow, MED, { BackgroundColor3 = BONE })
+		tween(action, MED, { BackgroundColor3 = ENGAGED, TextColor3 = ACCENT })
+		tween(actionShadow, MED, { BackgroundColor3 = ACCENT })
 	elseif target then
 		action.Text = "ENGAGE"
-		tween(action, MED, { BackgroundColor3 = BONE, TextColor3 = INK })
-		tween(actionShadow, MED, { BackgroundColor3 = HOT })
+		tween(action, MED, { BackgroundColor3 = ACCENT, TextColor3 = BASE })
+		tween(actionShadow, MED, { BackgroundColor3 = SHADOW })
 	else
 		action.Text = "PICK A TARGET"
-		tween(action, MED, { BackgroundColor3 = Color3.fromRGB(58, 56, 51), TextColor3 = DIM })
-		tween(actionShadow, MED, { BackgroundColor3 = Color3.fromRGB(38, 36, 33) })
+		tween(action, MED, { BackgroundColor3 = SURFACE, TextColor3 = MUTED })
+		tween(actionShadow, MED, { BackgroundColor3 = RAISED })
 	end
 	setPulse(flying)
 	paintMode()
@@ -944,7 +970,7 @@ local function setVisible(v)
 	if v then
 		gui.Enabled = true
 		tween(uiScale, POP, { Scale = baseScale() })
-		tween(shadow, POP, { Position = UDim2.fromOffset(7, 7) })
+		tween(shadow, POP, { Position = UDim2.fromOffset(6, 6) })
 	else
 		local t = tween(uiScale, HIDE, { Scale = 0.02 })
 		tween(shadow, HIDE, { Position = UDim2.fromOffset(0, 0) })
@@ -995,7 +1021,7 @@ bind(UserInputService.InputEnded, function(input)
 		moving = false
 		if sliding then
 			sliding = false
-			tween(handle, FAST, { Size = UDim2.new(0, 6, 1, 12) })
+			tween(knob, FAST, { Size = UDim2.fromOffset(22, 22) })
 		end
 	end
 end)
@@ -1032,11 +1058,10 @@ bind(Players.PlayerRemoving, function(p)
 		refreshUI()
 	end
 end)
+-- new body after respawn: old constraints died with the old character, heartbeat re-attaches
 bind(LocalPlayer.CharacterAdded, function()
-	if flying then
-		stopFly()
-		refreshUI()
-	end
+	mover, aligner, attach = nil, nil, nil
+	vel = Vector3.zero
 end)
 
 local function updateDistances()
@@ -1051,7 +1076,7 @@ local function updateDistances()
 	if tr and myRoot then
 		d = tostring(math.floor((tr.Position - myRoot.Position).Magnitude))
 	end
-	distLabel.Text = string.format('<font color="%s">DIST </font>%s', DIM_HEX, d)
+	distLabel.Text = string.format('<font color="%s">DIST </font>%s', MUTED_HEX, d)
 end
 
 local uiAccum = 0
@@ -1067,11 +1092,24 @@ bind(RunService.Heartbeat, function(dt)
 
 	local now = os.clock()
 	local _, hum, myRoot = myParts()
-	if not (hum and myRoot and mover and mover.Parent) or hum.Health <= 0 then
-		stopFly()
-		refreshUI()
+	if not (hum and myRoot and myRoot.Parent) then
+		-- no body at all (between death cleanup and respawn): wait, stay engaged
+		kill(mover)
+		kill(aligner)
+		kill(attach)
+		mover, aligner, attach = nil, nil, nil
+		vel = Vector3.zero
+		mode = "DEAD"
+		if mode ~= shownMode then
+			paintMode()
+		end
 		return
 	end
+	if not (mover and mover.Parent) then
+		attachMover(hum, myRoot)
+	end
+	-- alive = keep upright and facing where we go; ragdoll corpse = just drag it along
+	aligner.Enabled = hum.Health > 0
 
 	local tRoot = targetRoot()
 	if not tRoot then
